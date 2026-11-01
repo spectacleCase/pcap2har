@@ -1,0 +1,52 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "spectacleCase/pcap2har"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn extract_exchanges(Bytes) -> Result[Array[HttpExchange], ConvertError]
+
+pub fn pcap_to_har(Bytes) -> Result[String, ConvertError]
+
+pub fn sample_pcap() -> Bytes
+
+pub let version : String
+
+// Errors
+
+// Types and methods
+pub enum ConvertError {
+  InvalidPcap
+  HarRejected(String)
+} derive(Eq, @debug.Debug)
+pub fn ConvertError::equal(Self, Self) -> Bool
+pub fn ConvertError::not_equal(Self, Self) -> Bool
+pub fn ConvertError::to_repr(Self) -> @debug.Repr
+
+pub struct HttpExchange {
+  http_method : String
+  url : String
+  status : Int32
+  status_text : String
+  http_version : String
+  started_at : String
+  response_mime : String
+  response_body : String
+} derive(Eq, @debug.Debug)
+pub fn HttpExchange::equal(Self, Self) -> Bool
+pub fn HttpExchange::http_method(Self) -> String
+pub fn HttpExchange::http_version(Self) -> String
+pub fn HttpExchange::not_equal(Self, Self) -> Bool
+pub fn HttpExchange::response_body(Self) -> String
+pub fn HttpExchange::response_mime(Self) -> String
+pub fn HttpExchange::started_at(Self) -> String
+pub fn HttpExchange::status(Self) -> Int32
+pub fn HttpExchange::status_text(Self) -> String
+pub fn HttpExchange::to_repr(Self) -> @debug.Repr
+pub fn HttpExchange::url(Self) -> String
+
+// Type aliases
+
+// Traits

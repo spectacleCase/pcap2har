@@ -7,11 +7,11 @@ Wireshark 保存的是报文，浏览器 HAR 保存的是一次次 HTTP 交换�
 ## 边界
 
 - 只读经典 pcap。文件头按规范识别小端和大端，链路类型只接受 Ethernet，网络层按 IPv4，传输层按 TCP。
-- 每个 TCP 段里只放一条 HTTP/1.1 报文。跨包重组、pcapng、TLS 都不在首版里。
-- 报文分层用 `moonbit-pcap` 的 `parse_ethernet`、`parse_ipv4`、`parse_tcp`。pcap 文件头由本项目自己读，不用它的 `PcapReader` / `PcapWriter`：0.1.2 把 magic 和后面的字节序配反了，写出的文件 Wireshark 认不出。
+- 同一方向上被拆开或乱序的 TCP 段会用 `moonbit-pcap` 的 `TcpStreamReassembler` 拼回后再解析 HTTP。pcapng 和 TLS 不在这版里。
+- 报文分层用 `parse_ethernet`、`parse_ipv4`、`parse_tcp`。pcap 文件头由本项目自己读，不用它的 `PcapReader` / `PcapWriter`：0.1.2 把 magic 和后面的字节序配反了，写出的文件 Wireshark 认不出。
 - `parse_http` 目前只根据前缀判断是不是 HTTP，方法、路径和状态码由本项目从起始行解析。
-- HAR 的 `time` 和 timings 先写 0。`startedDateTime` 使用请求包的整秒 UTC 时间，微秒丢掉。
-- 请求体只记录 `bodySize`，不生成 `postData`。Cookie 留在 headers 里，不拆进 cookies 数组。
+- `startedDateTime` 使用请求首字节所在包的整秒 UTC。`time` 和 `timings.wait` 是响应首字节与请求首字节的毫秒差，`send` 和 `receive` 写 0。
+- 有正文的请求会写成 `postData`。`Cookie` 和 `Set-Cookie` 会拆进 cookies 数组。
 
 ## 快速开始
 

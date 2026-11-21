@@ -33,12 +33,13 @@ fn u32be(n : Int32) -> Array[Byte] {
 fn tcp_segment(
   src_port : Int32,
   dst_port : Int32,
+  seq : Int32,
   payload : Array[Byte],
 ) -> Array[Byte] {
   let seg : Array[Byte] = []
   push_all(seg, u16be(src_port))
   push_all(seg, u16be(dst_port))
-  push_all(seg, u32be(1))
+  push_all(seg, u32be(seq))
   push_all(seg, u32be(1))
   push_all(seg, u16be(0x5018))
   push_all(seg, u16be(65535))
@@ -85,6 +86,22 @@ fn ethernet_frame(
 }
 
 ///|
+fn http_frame_seq(
+  src_ip : Array[Byte],
+  dst_ip : Array[Byte],
+  src_mac : Array[Byte],
+  dst_mac : Array[Byte],
+  src_port : Int32,
+  dst_port : Int32,
+  seq : Int32,
+  http : String,
+) -> Bytes {
+  let tcp = tcp_segment(src_port, dst_port, seq, ascii(http))
+  let ip = ipv4_packet(src_ip, dst_ip, tcp)
+  ethernet_frame(dst_mac, src_mac, ip)
+}
+
+///|
 fn http_frame(
   src_ip : Array[Byte],
   dst_ip : Array[Byte],
@@ -94,9 +111,7 @@ fn http_frame(
   dst_port : Int32,
   http : String,
 ) -> Bytes {
-  let tcp = tcp_segment(src_port, dst_port, ascii(http))
-  let ip = ipv4_packet(src_ip, dst_ip, tcp)
-  ethernet_frame(dst_mac, src_mac, ip)
+  http_frame_seq(src_ip, dst_ip, src_mac, dst_mac, src_port, dst_port, 1, http)
 }
 
 ///|

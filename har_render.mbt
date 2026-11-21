@@ -54,17 +54,53 @@ fn json_fields(fields : Array[Field]) -> String {
 }
 
 ///|
+fn json_cookies(cookies : Array[Cookie]) -> String {
+  let buf = StringBuilder()
+  buf.write_char('[')
+  for i = 0; i < cookies.length(); i = i + 1 {
+    if i > 0 {
+      buf.write_char(',')
+    }
+    let cookie = cookies[i]
+    buf.write_string("{\"name\":")
+    buf.write_string(json_string(cookie.name))
+    buf.write_string(",\"value\":")
+    buf.write_string(json_string(cookie.value))
+    match cookie.path {
+      Some(path) => {
+        buf.write_string(",\"path\":")
+        buf.write_string(json_string(path))
+      }
+      None => ()
+    }
+    if cookie.http_only {
+      buf.write_string(",\"httpOnly\":true")
+    }
+    if cookie.secure {
+      buf.write_string(",\"secure\":true")
+    }
+    buf.write_char('}')
+  }
+  buf.write_char(']')
+  buf.to_string()
+}
+
+///|
 fn render_entry(entry : Captured) -> String {
   let buf = StringBuilder()
   buf.write_string("{\"startedDateTime\":")
   buf.write_string(json_string(entry.started_at))
-  buf.write_string(",\"time\":0,\"request\":{\"method\":")
+  buf.write_string(",\"time\":")
+  buf.write_string(entry.time_ms.to_string())
+  buf.write_string(",\"request\":{\"method\":")
   buf.write_string(json_string(entry.http_method))
   buf.write_string(",\"url\":")
   buf.write_string(json_string(entry.url))
   buf.write_string(",\"httpVersion\":")
   buf.write_string(json_string(entry.version))
-  buf.write_string(",\"cookies\":[],\"headers\":")
+  buf.write_string(",\"cookies\":")
+  buf.write_string(json_cookies(entry.request_cookies))
+  buf.write_string(",\"headers\":")
   buf.write_string(json_fields(entry.request_headers))
   buf.write_string(",\"queryString\":")
   buf.write_string(json_fields(entry.query))
@@ -72,13 +108,22 @@ fn render_entry(entry : Captured) -> String {
   buf.write_string(entry.request_headers_size.to_string())
   buf.write_string(",\"bodySize\":")
   buf.write_string(entry.request_body_size.to_string())
+  if entry.request_body_size > 0 {
+    buf.write_string(",\"postData\":{\"mimeType\":")
+    buf.write_string(json_string(media_type(entry.request_headers)))
+    buf.write_string(",\"text\":")
+    buf.write_string(json_string(entry.request_body))
+    buf.write_char('}')
+  }
   buf.write_string("},\"response\":{\"status\":")
   buf.write_string(entry.status.to_string())
   buf.write_string(",\"statusText\":")
   buf.write_string(json_string(entry.status_text))
   buf.write_string(",\"httpVersion\":")
   buf.write_string(json_string(entry.response_version))
-  buf.write_string(",\"cookies\":[],\"headers\":")
+  buf.write_string(",\"cookies\":")
+  buf.write_string(json_cookies(entry.response_cookies))
+  buf.write_string(",\"headers\":")
   buf.write_string(json_fields(entry.response_headers))
   buf.write_string(",\"content\":{\"size\":")
   buf.write_string(entry.response_body_size.to_string())
@@ -90,9 +135,9 @@ fn render_entry(entry : Captured) -> String {
   buf.write_string(entry.response_headers_size.to_string())
   buf.write_string(",\"bodySize\":")
   buf.write_string(entry.response_body_size.to_string())
-  buf.write_string(
-    "},\"cache\":{},\"timings\":{\"send\":0,\"wait\":0,\"receive\":0}}",
-  )
+  buf.write_string("},\"cache\":{},\"timings\":{\"send\":0,\"wait\":")
+  buf.write_string(entry.time_ms.to_string())
+  buf.write_string(",\"receive\":0}}")
   buf.to_string()
 }
 

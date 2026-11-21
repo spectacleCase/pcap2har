@@ -5,6 +5,15 @@ priv struct Field {
 }
 
 ///|
+priv struct Cookie {
+  name : String
+  value : String
+  path : String?
+  http_only : Bool
+  secure : Bool
+}
+
+///|
 priv struct HeldRequest {
   http_method : String
   url : String
@@ -13,7 +22,11 @@ priv struct HeldRequest {
   query : Array[Field]
   headers_size : Int32
   body_size : Int32
+  body_text : String
+  cookies : Array[Cookie]
   started_at : String
+  seconds : Int32
+  millis : Int32
   src_ip : String
   dst_ip : String
   src_port : Int32
@@ -30,6 +43,9 @@ priv struct HeldResponse {
   body_size : Int32
   mime : String
   body_text : String
+  cookies : Array[Cookie]
+  seconds : Int32
+  millis : Int32
   src_ip : String
   dst_ip : String
   src_port : Int32
@@ -54,12 +70,16 @@ priv struct Captured {
   query : Array[Field]
   request_headers_size : Int32
   request_body_size : Int32
+  request_body : String
+  request_cookies : Array[Cookie]
   response_version : String
   response_headers : Array[Field]
   response_headers_size : Int32
   response_body_size : Int32
+  response_cookies : Array[Cookie]
   mime : String
   body_text : String
+  time_ms : Int32
 }
 
 ///|
@@ -318,7 +338,155 @@ fn message_parts(
 }
 
 ///|
-fn read_flow(frame : Bytes, timestamp_seconds : Int32) -> Flow? {
+priv struct TcpPiece {
+  src_ip : String
+  dst_ip : String
+  src_port : Int32
+  dst_port : Int32
+  seq : UInt32
+  payload : Bytes
+  seconds : Int32
+  millis : Int32
+}
+
+///|
+priv struct TcpDirection {
+  src_ip : String
+  dst_ip : String
+  src_port : Int32
+  dst_port : Int32
+  pieces : Array[TcpPiece]
+}
+
+///|
+fn trim_space(text : String) -> String {
+  let mut start = 0
+  let mut end = text.length()
+  while start < end && text[start].to_int() == 32 {
+    start = start + 1
+  }
+  while end > start && text[end - 1].to_int() == 32 {
+    end = end - 1
+  }
+  text[start:end].to_owned()
+}
+
+///|
+fn split_semi(text : String) -> Array[String] {
+  let parts : Array[String] = []
+  let mut start = 0
+  let mut i = 0
+  while i <= text.length() {
+    if i == text.length() || text[i].to_int() == 59 {
+      let piece = trim_space(text[start:i].to_owned())
+      if piece.length() > 0 {
+        parts.push(piece)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  parts
+}
+
+///|
+fn name_value(piece : String) -> (String, String)? {
+  match piece.find("=") {
+    None => None
+    Some(index) =>
+      Some((owned_until(piece, index), owned_from(piece, index + 1)))
+  }
+}
+
+///|
+fn parse_cookie_header(value : String) -> Array[Cookie] {
+  let cookies : Array[Cookie] = []
+  for piece in split_semi(value) {
+    match name_value(piece) {
+      Some((name, cookie_value)) =>
+        cookies.push({
+          name,
+          value: cookie_value,
+          path: None,
+          http_only: false,
+          secure: false,
+        })
+      None => ()
+    }
+  }
+  cookies
+}
+
+///|
+fn parse_set_cookie(value : String) -> Cookie? {
+  let parts = split_semi(value)
+  if parts.length() == 0 {
+    return None
+  }
+  let (name, cookie_value) = match name_value(parts[0]) {
+    Some(pair) => pair
+    None => return None
+  }
+  let mut path : String? = None
+  let mut http_only = false
+  let mut secure = false
+  for i = 1; i < parts.length(); i = i + 1 {
+    let lower = parts[i].to_lower()
+    if lower == "httponly" {
+      http_only = true
+    } else if lower == "secure" {
+      secure = true
+    } else {
+      match name_value(parts[i]) {
+        Some((attr, attr_value)) =>
+          if attr.to_lower() == "path" {
+            path = Some(attr_value)
+          }
+        None => ()
+      }
+    }
+  }
+  Some({ name, value: cookie_value, path, http_only, secure, })
+}
+
+///|
+fn cookies_from(headers : Array[Field], set_cookie : Bool) -> Array[Cookie] {
+  let cookies : Array[Cookie] = []
+  let wanted = if set_cookie { "set-cookie" } else { "cookie" }
+  for header in headers {
+    if header.name.to_lower() == wanted {
+      if set_cookie {
+        match parse_set_cookie(header.value) {
+          Some(cookie) => cookies.push(cookie)
+          None => ()
+        }
+      } else {
+        for cookie in parse_cookie_header(header.value) {
+          cookies.push(cookie)
+        }
+      }
+    }
+  }
+  cookies
+}
+
+///|
+fn content_length(headers : Array[Field]) -> Int32? {
+  match header_value(headers, "content-length") {
+    Some(value) => parse_status(trim_space(value))
+    None => None
+  }
+}
+
+///|
+fn method_has_body(line : String) -> Bool {
+  line.has_prefix("POST ") ||
+  line.has_prefix("PUT ") ||
+  line.has_prefix("PATCH ")
+}
+
+///|
+fn read_piece(frame : Bytes, seconds : Int32, millis : Int32) -> TcpPiece? {
   let ethernet = match @layers.parse_ethernet(frame) {
     Some(header) => header
     None => return None
@@ -337,61 +505,181 @@ fn read_flow(frame : Bytes, timestamp_seconds : Int32) -> Flow? {
     Some(header) => header
     None => return None
   }
-  if tcp.payload.length() == 0 {
+  if tcp.payload.length() == 0 || tcp.flag_syn {
     return None
   }
-  let (line, headers, headers_size, body_size, body) = match
-    message_parts(tcp.payload) {
-    Some(parts) => parts
-    None => return None
-  }
-  let (first, second, third) = match parse_start_line(line) {
-    Some(parts) => parts
-    None => return None
-  }
-  let src_ip = ip_text(ip.src_ip)
-  let dst_ip = ip_text(ip.dst_ip)
-  let src_port = tcp.src_port.reinterpret_as_int()
-  let dst_port = tcp.dst_port.reinterpret_as_int()
-  if first.has_prefix("HTTP/") {
-    let status = match parse_status(second) {
-      Some(code) => code
-      None => return None
+  Some({
+    src_ip: ip_text(ip.src_ip),
+    dst_ip: ip_text(ip.dst_ip),
+    src_port: tcp.src_port.reinterpret_as_int(),
+    dst_port: tcp.dst_port.reinterpret_as_int(),
+    seq: tcp.seq_num,
+    payload: tcp.payload,
+    seconds,
+    millis,
+  })
+}
+
+///|
+fn direction_of(directions : Array[TcpDirection], piece : TcpPiece) -> Int32 {
+  for i = 0; i < directions.length(); i = i + 1 {
+    let direction = directions[i]
+    if direction.src_ip == piece.src_ip &&
+      direction.dst_ip == piece.dst_ip &&
+      direction.src_port == piece.src_port &&
+      direction.dst_port == piece.dst_port {
+      return i
     }
-    Some(
-      Response({
-        version: first,
-        status,
-        status_text: third,
-        headers,
-        headers_size,
-        body_size,
-        mime: media_type(headers),
-        body_text: body,
-        src_ip,
-        dst_ip,
-        src_port,
-        dst_port,
-      }),
-    )
-  } else {
-    Some(
-      Request({
-        http_method: first,
-        url: request_url(second, headers),
-        version: third,
-        headers,
-        query: parse_query(second),
-        headers_size,
-        body_size,
-        started_at: unix_utc(timestamp_seconds),
-        src_ip,
-        dst_ip,
-        src_port,
-        dst_port,
-      }),
-    )
   }
+  directions.push({
+    src_ip: piece.src_ip,
+    dst_ip: piece.dst_ip,
+    src_port: piece.src_port,
+    dst_port: piece.dst_port,
+    pieces: [],
+  })
+  directions.length() - 1
+}
+
+///|
+fn reassemble(pieces : Array[TcpPiece]) -> Bytes {
+  if pieces.length() == 0 {
+    return Bytes::from_array([])
+  }
+  let mut min_seq = pieces[0].seq
+  for piece in pieces {
+    if piece.seq < min_seq {
+      min_seq = piece.seq
+    }
+  }
+  let first = pieces[0]
+  let stream = @reassembly.TcpStreamReassembler::new(
+    @reassembly.SessionKey::new(
+      first.src_ip,
+      first.src_port.reinterpret_as_uint(),
+      first.dst_ip,
+      first.dst_port.reinterpret_as_uint(),
+    ),
+  )
+  stream.set_initial_seq(min_seq)
+  for piece in pieces {
+    stream.add_segment(piece.seq, piece.payload, 0.0)
+  }
+  stream.get_data()
+}
+
+///|
+fn first_piece(pieces : Array[TcpPiece]) -> TcpPiece {
+  let mut chosen = pieces[0]
+  for piece in pieces {
+    if piece.seq < chosen.seq {
+      chosen = piece
+    }
+  }
+  chosen
+}
+
+///|
+fn messages_from(
+  data : Bytes,
+) -> Array[(String, Array[Field], Int32, Int32, String)] {
+  let messages : Array[(String, Array[Field], Int32, Int32, String)] = []
+  let mut offset = 0
+  while offset < data.length() {
+    let rest = copy_bytes(data, offset, data.length())
+    let (line, headers, headers_size, _, _) = match message_parts(rest) {
+      Some(parts) => parts
+      None => break
+    }
+    let available = rest.length() - headers_size
+    let body_size = match content_length(headers) {
+      Some(length) => if length > available { break } else { length }
+      None =>
+        if line.has_prefix("HTTP/") || method_has_body(line) {
+          available
+        } else {
+          0
+        }
+    }
+    let body = match printable_text(rest, headers_size) {
+      Some(text) =>
+        if text.length() >= body_size {
+          text[:body_size].to_owned()
+        } else {
+          text
+        }
+      None => ""
+    }
+    messages.push((line, headers, headers_size, body_size, body))
+    offset = offset + headers_size + body_size
+    if headers_size + body_size == 0 {
+      break
+    }
+  }
+  messages
+}
+
+///|
+fn flows_from(direction : TcpDirection) -> Array[Flow] {
+  if direction.pieces.length() == 0 {
+    return []
+  }
+  let stamp = first_piece(direction.pieces)
+  let flows : Array[Flow] = []
+  for message in messages_from(reassemble(direction.pieces)) {
+    let (line, headers, headers_size, body_size, body) = message
+    match parse_start_line(line) {
+      None => ()
+      Some((first, second, third)) =>
+        if first.has_prefix("HTTP/") {
+          match parse_status(second) {
+            None => ()
+            Some(status) =>
+              flows.push(
+                Response({
+                  version: first,
+                  status,
+                  status_text: third,
+                  headers,
+                  headers_size,
+                  body_size,
+                  mime: media_type(headers),
+                  body_text: body,
+                  cookies: cookies_from(headers, true),
+                  seconds: stamp.seconds,
+                  millis: stamp.millis,
+                  src_ip: direction.src_ip,
+                  dst_ip: direction.dst_ip,
+                  src_port: direction.src_port,
+                  dst_port: direction.dst_port,
+                }),
+              )
+          }
+        } else {
+          flows.push(
+            Request({
+              http_method: first,
+              url: request_url(second, headers),
+              version: third,
+              headers,
+              query: parse_query(second),
+              headers_size,
+              body_size,
+              body_text: body,
+              cookies: cookies_from(headers, false),
+              started_at: unix_utc(stamp.seconds),
+              seconds: stamp.seconds,
+              millis: stamp.millis,
+              src_ip: direction.src_ip,
+              dst_ip: direction.dst_ip,
+              src_port: direction.src_port,
+              dst_port: direction.dst_port,
+            }),
+          )
+        }
+    }
+  }
+  flows
 }
 
 ///|
@@ -403,39 +691,94 @@ fn same_connection(request : HeldRequest, response : HeldResponse) -> Bool {
 }
 
 ///|
+fn elapsed_ms(
+  start_seconds : Int32,
+  start_millis : Int32,
+  end_seconds : Int32,
+  end_millis : Int32,
+) -> Int32 {
+  if end_seconds < start_seconds {
+    return 0
+  }
+  let seconds = end_seconds - start_seconds
+  if seconds > 2000000 {
+    return 2000000000
+  }
+  let total = seconds * 1000 + (end_millis - start_millis)
+  if total < 0 {
+    0
+  } else {
+    total
+  }
+}
+
+///|
 fn capture_packets(packets : Array[RawPacket]) -> Array[Captured] {
-  let captured : Array[Captured] = []
-  let mut pending : HeldRequest? = None
+  let directions : Array[TcpDirection] = []
   for packet in packets {
-    match read_flow(packet.payload, packet.timestamp_seconds) {
+    match
+      read_piece(
+        packet.payload,
+        packet.timestamp_seconds,
+        packet.timestamp_millis,
+      ) {
       None => ()
-      Some(Request(request)) => pending = Some(request)
-      Some(Response(response)) =>
-        match pending {
-          Some(request) =>
-            if same_connection(request, response) {
-              captured.push({
-                http_method: request.http_method,
-                url: request.url,
-                version: request.version,
-                status: response.status,
-                status_text: response.status_text,
-                started_at: request.started_at,
-                request_headers: request.headers,
-                query: request.query,
-                request_headers_size: request.headers_size,
-                request_body_size: request.body_size,
-                response_version: response.version,
-                response_headers: response.headers,
-                response_headers_size: response.headers_size,
-                response_body_size: response.body_size,
-                mime: response.mime,
-                body_text: response.body_text,
-              })
-              pending = None
-            }
-          None => ()
+      Some(piece) => {
+        let index = direction_of(directions, piece)
+        directions[index].pieces.push(piece)
+      }
+    }
+  }
+  let flows : Array[Flow] = []
+  for direction in directions {
+    for flow in flows_from(direction) {
+      flows.push(flow)
+    }
+  }
+  let captured : Array[Captured] = []
+  let pending : Array[HeldRequest] = []
+  for flow in flows {
+    match flow {
+      Request(request) => pending.push(request)
+      Response(response) => {
+        let mut found = -1
+        for i = 0; i < pending.length(); i = i + 1 {
+          if same_connection(pending[i], response) {
+            found = i
+            break
+          }
         }
+        if found >= 0 {
+          let request = pending.remove(found)
+          captured.push({
+            http_method: request.http_method,
+            url: request.url,
+            version: request.version,
+            status: response.status,
+            status_text: response.status_text,
+            started_at: request.started_at,
+            request_headers: request.headers,
+            query: request.query,
+            request_headers_size: request.headers_size,
+            request_body_size: request.body_size,
+            request_body: request.body_text,
+            request_cookies: request.cookies,
+            response_version: response.version,
+            response_headers: response.headers,
+            response_headers_size: response.headers_size,
+            response_body_size: response.body_size,
+            response_cookies: response.cookies,
+            mime: response.mime,
+            body_text: response.body_text,
+            time_ms: elapsed_ms(
+              request.seconds,
+              request.millis,
+              response.seconds,
+              response.millis,
+            ),
+          })
+        }
+      }
     }
   }
   captured

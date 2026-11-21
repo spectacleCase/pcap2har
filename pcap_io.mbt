@@ -1,6 +1,7 @@
 ///|
 priv struct RawPacket {
   timestamp_seconds : Int32
+  timestamp_millis : Int32
   payload : Bytes
 }
 
@@ -87,6 +88,12 @@ fn has_magic(data : Bytes, magic : Array[Byte]) -> Bool {
 }
 
 ///|
+fn pcap_is_nano(data : Bytes) -> Bool {
+  has_magic(data, [b'\x4d', b'\x3c', b'\xb2', b'\xa1']) ||
+  has_magic(data, [b'\xa1', b'\xb2', b'\x3c', b'\x4d'])
+}
+
+///|
 fn pcap_is_little(data : Bytes) -> Bool? {
   if has_magic(data, [b'\xd4', b'\xc3', b'\xb2', b'\xa1']) ||
     has_magic(data, [b'\x4d', b'\x3c', b'\xb2', b'\xa1']) {
@@ -119,6 +126,15 @@ fn read_classic_pcap(data : Bytes) -> Result[Array[RawPacket], ConvertError] {
       Some(value) => value
       None => return Err(InvalidPcap)
     }
+    let fraction = match read_u32(data, offset + 4, little) {
+      Some(value) => value
+      None => return Err(InvalidPcap)
+    }
+    let millis = if pcap_is_nano(data) {
+      fraction / 1000000
+    } else {
+      fraction / 1000
+    }
     let included = match read_u32(data, offset + 8, little) {
       Some(value) => value
       None => return Err(InvalidPcap)
@@ -129,6 +145,7 @@ fn read_classic_pcap(data : Bytes) -> Result[Array[RawPacket], ConvertError] {
     }
     packets.push({
       timestamp_seconds: seconds,
+      timestamp_millis: millis,
       payload: copy_bytes(data, payload_at, payload_at + included),
     })
     offset = payload_at + included

@@ -13,7 +13,8 @@ test "sample pcap becomes one validated HAR entry" {
       assert_eq(document.entry_count(), 1)
       let entry = document.entries()[0]
       assert_eq(entry.started_datetime(), "2024-09-01T00:00:00Z")
-      assert_eq(entry.time(), 0.0)
+      assert_eq(entry.time(), 1.0)
+      assert_eq(entry.timings().wait(), 1.0)
       assert_eq(entry.request().request_method(), "GET")
       assert_eq(entry.request().url(), "http://example.com/api/users?id=7")
       assert_eq(entry.request().http_version(), "HTTP/1.1")

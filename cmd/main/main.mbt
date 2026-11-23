@@ -18,10 +18,12 @@ fn usage() -> Unit {
       #|  pcap2har sample
       #|  pcap2har convert <file.pcap>
       #|  pcap2har write-sample <file.pcap>
+      #|  pcap2har write-sample-pcapng <file.pcapng>
       #|
       #|sample prints HAR 1.2 for the built-in cleartext HTTP/1.1 capture.
-      #|convert reads a classic pcap and prints HAR 1.2.
-      #|write-sample writes that built-in capture to a pcap file.
+      #|convert reads a classic pcap or pcapng and prints HAR 1.2.
+      #|write-sample writes that built-in capture to a classic pcap file.
+      #|write-sample-pcapng writes the same capture to a pcapng file.
     ),
   )
 }
@@ -59,6 +61,14 @@ async fn write_sample(path : String) -> Bool {
 }
 
 ///|
+async fn write_sample_pcapng(path : String) -> Bool {
+  @fs.write_file(path, @pcap2har.sample_pcapng()) catch {
+    _ => return false
+  }
+  true
+}
+
+///|
 async fn main {
   let args = @env.args()
   if args.length() < 2 || args[1] == "-h" || args[1] == "--help" {
@@ -89,6 +99,16 @@ async fn main {
         usage()
         1
       } else if write_sample(args[2]) {
+        0
+      } else {
+        println("cannot write file: \{args[2]}")
+        1
+      }
+    "write-sample-pcapng" =>
+      if args.length() < 3 {
+        usage()
+        1
+      } else if write_sample_pcapng(args[2]) {
         0
       } else {
         println("cannot write file: \{args[2]}")

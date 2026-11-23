@@ -84,7 +84,7 @@ fn to_exchange(entry : Captured) -> HttpExchange {
 
 ///|
 fn capture_pcap(bytes : Bytes) -> Result[Array[Captured], ConvertError] {
-  let packets = match read_classic_pcap(bytes) {
+  let packets = match read_capture(bytes) {
     Ok(packets) => packets
     Err(error) => return Err(error)
   }
@@ -123,7 +123,7 @@ fn accept_har(text : String) -> Result[String, ConvertError] {
 }
 
 ///|
-/// 把经典 pcap 里的明文 HTTP/1.1 往返写成 HAR 1.2。
+/// 把经典 pcap 或 pcapng 里的明文 HTTP/1.1 往返写成 HAR 1.2。
 pub fn pcap_to_har(bytes : Bytes) -> Result[String, ConvertError] {
   let captured = match capture_pcap(bytes) {
     Ok(entries) => entries

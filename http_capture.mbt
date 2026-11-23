@@ -27,6 +27,8 @@ priv struct HeldRequest {
   started_at : String
   seconds : Int32
   millis : Int32
+  end_seconds : Int32
+  end_millis : Int32
   src_ip : String
   dst_ip : String
   src_port : Int32
@@ -44,8 +46,11 @@ priv struct HeldResponse {
   mime : String
   body_text : String
   cookies : Array[Cookie]
+  decoded_size : Int32
   seconds : Int32
   millis : Int32
+  end_seconds : Int32
+  end_millis : Int32
   src_ip : String
   dst_ip : String
   src_port : Int32
@@ -79,7 +84,10 @@ priv struct Captured {
   response_cookies : Array[Cookie]
   mime : String
   body_text : String
-  time_ms : Int32
+  decoded_size : Int32
+  send_ms : Int32
+  wait_ms : Int32
+  receive_ms : Int32
 }
 
 ///|
@@ -580,10 +588,141 @@ fn first_piece(pieces : Array[TcpPiece]) -> TcpPiece {
 }
 
 ///|
-fn messages_from(
-  data : Bytes,
-) -> Array[(String, Array[Field], Int32, Int32, String)] {
-  let messages : Array[(String, Array[Field], Int32, Int32, String)] = []
+priv struct ParsedHttp {
+  line : String
+  headers : Array[Field]
+  headers_size : Int32
+  wire_body : Int32
+  decoded_size : Int32
+  body_text : String
+  byte_offset : Int32
+}
+
+///|
+fn read_crlf_line(data : Bytes, at : Int32) -> (String, Int32)? {
+  let mut i = at
+  while i + 1 < data.length() {
+    if data[i] == b'\r' && data[i + 1] == b'\n' {
+      return Some((bytes_ascii(data, at, i), i + 2))
+    }
+    i = i + 1
+  }
+  None
+}
+
+///|
+fn parse_chunk_size(line : String) -> Int32? {
+  let mut size = 0
+  let mut seen = false
+  let mut i = 0
+  while i < line.length() {
+    let c = line[i].to_int()
+    if c == 59 {
+      break
+    }
+    if c == 32 || c == 9 {
+      if seen {
+        break
+      }
+    } else {
+      let digit = if c >= 48 && c <= 57 {
+        c - 48
+      } else if c >= 97 && c <= 102 {
+        c - 87
+      } else if c >= 65 && c <= 70 {
+        c - 55
+      } else {
+        return None
+      }
+      size = size * 16 + digit
+      seen = true
+    }
+    i = i + 1
+  }
+  if seen {
+    Some(size)
+  } else {
+    None
+  }
+}
+
+///|
+fn decode_chunks(data : Bytes) -> (Bytes, Int32)? {
+  let decoded : Array[Byte] = []
+  let mut at = 0
+  let mut failed = false
+  let mut finished = false
+  while !finished && !failed {
+    let (line, next) = match read_crlf_line(data, at) {
+      Some(parsed) => parsed
+      None => {
+        failed = true
+        ("", at)
+      }
+    }
+    if !failed {
+      at = next
+      match parse_chunk_size(line) {
+        None => failed = true
+        Some(size) =>
+          if size == 0 {
+            let mut trailers = true
+            while trailers && !failed {
+              let (trailer, trailer_next) = match read_crlf_line(data, at) {
+                Some(parsed) => parsed
+                None => {
+                  failed = true
+                  ("", at)
+                }
+              }
+              if !failed {
+                at = trailer_next
+                if trailer.length() == 0 {
+                  trailers = false
+                  finished = true
+                }
+              }
+            }
+          } else if at + size + 2 > data.length() ||
+            data[at + size] != b'\r' ||
+            data[at + size + 1] != b'\n' {
+            failed = true
+          } else {
+            for i = 0; i < size; i = i + 1 {
+              decoded.push(data[at + i])
+            }
+            at = at + size + 2
+          }
+      }
+    }
+  }
+  if failed {
+    None
+  } else {
+    Some((Bytes::from_array(decoded), at))
+  }
+}
+
+///|
+fn is_chunked(headers : Array[Field]) -> Bool {
+  match header_value(headers, "transfer-encoding") {
+    Some(value) => value.to_lower().contains("chunked")
+    None => false
+  }
+}
+
+///|
+fn body_text_of(data : Bytes, start : Int32, len : Int32) -> String {
+  let slice = copy_bytes(data, start, start + len)
+  match printable_text(slice, 0) {
+    Some(text) => text
+    None => ""
+  }
+}
+
+///|
+fn messages_from(data : Bytes) -> Array[ParsedHttp] {
+  let messages : Array[ParsedHttp] = []
   let mut offset = 0
   while offset < data.length() {
     let rest = copy_bytes(data, offset, data.length())
@@ -592,27 +731,44 @@ fn messages_from(
       None => break
     }
     let available = rest.length() - headers_size
-    let body_size = match content_length(headers) {
-      Some(length) => if length > available { break } else { length }
-      None =>
-        if line.has_prefix("HTTP/") || method_has_body(line) {
-          available
-        } else {
-          0
-        }
+    let (wire_body, decoded_size, body_text) = if is_chunked(headers) {
+      let raw = copy_bytes(rest, headers_size, rest.length())
+      match decode_chunks(raw) {
+        Some((decoded, consumed)) =>
+          (
+            consumed,
+            decoded.length(),
+            match printable_text(decoded, 0) {
+              Some(text) => text
+              None => ""
+            },
+          )
+        None => break
+      }
+    } else {
+      let body_size = match content_length(headers) {
+        Some(length) => if length > available { break } else { length }
+        None =>
+          if line.has_prefix("HTTP/") || method_has_body(line) {
+            available
+          } else {
+            0
+          }
+      }
+      (body_size, body_size, body_text_of(rest, headers_size, body_size))
     }
-    let body = match printable_text(rest, headers_size) {
-      Some(text) =>
-        if text.length() >= body_size {
-          text[:body_size].to_owned()
-        } else {
-          text
-        }
-      None => ""
-    }
-    messages.push((line, headers, headers_size, body_size, body))
-    offset = offset + headers_size + body_size
-    if headers_size + body_size == 0 {
+    messages.push({
+      line,
+      headers,
+      headers_size,
+      wire_body,
+      decoded_size,
+      body_text,
+      byte_offset: offset,
+    })
+    let consumed = headers_size + wire_body
+    offset = offset + consumed
+    if consumed == 0 {
       break
     }
   }
@@ -620,15 +776,76 @@ fn messages_from(
 }
 
 ///|
+fn time_before(
+  left_seconds : Int32,
+  left_millis : Int32,
+  right_seconds : Int32,
+  right_millis : Int32,
+) -> Bool {
+  left_seconds < right_seconds ||
+  (left_seconds == right_seconds && left_millis < right_millis)
+}
+
+///|
+fn message_span(
+  pieces : Array[TcpPiece],
+  min_seq : UInt32,
+  byte_offset : Int32,
+  byte_length : Int32,
+) -> (Int32, Int32, Int32, Int32) {
+  let seq_start = min_seq + byte_offset.reinterpret_as_uint()
+  let seq_end = seq_start + byte_length.reinterpret_as_uint()
+  let mut seen = false
+  let mut start_seconds = 0
+  let mut start_millis = 0
+  let mut end_seconds = 0
+  let mut end_millis = 0
+  for piece in pieces {
+    let piece_end = piece.seq + piece.payload.length().reinterpret_as_uint()
+    if piece.seq < seq_end && piece_end > seq_start {
+      if !seen ||
+        time_before(piece.seconds, piece.millis, start_seconds, start_millis) {
+        start_seconds = piece.seconds
+        start_millis = piece.millis
+      }
+      if !seen ||
+        time_before(end_seconds, end_millis, piece.seconds, piece.millis) {
+        end_seconds = piece.seconds
+        end_millis = piece.millis
+      }
+      seen = true
+    }
+  }
+  if !seen {
+    let piece = first_piece(pieces)
+    (piece.seconds, piece.millis, piece.seconds, piece.millis)
+  } else {
+    (start_seconds, start_millis, end_seconds, end_millis)
+  }
+}
+
+///|
 fn flows_from(direction : TcpDirection) -> Array[Flow] {
   if direction.pieces.length() == 0 {
     return []
   }
-  let stamp = first_piece(direction.pieces)
+  let mut min_seq = direction.pieces[0].seq
+  for piece in direction.pieces {
+    if piece.seq < min_seq {
+      min_seq = piece.seq
+    }
+  }
   let flows : Array[Flow] = []
-  for message in messages_from(reassemble(direction.pieces)) {
-    let (line, headers, headers_size, body_size, body) = message
-    match parse_start_line(line) {
+  let payload = reassemble(direction.pieces)
+  for message in messages_from(payload) {
+    let byte_length = message.headers_size + message.wire_body
+    let (seconds, millis, end_seconds, end_millis) = message_span(
+      direction.pieces,
+      min_seq,
+      message.byte_offset,
+      byte_length,
+    )
+    match parse_start_line(message.line) {
       None => ()
       Some((first, second, third)) =>
         if first.has_prefix("HTTP/") {
@@ -640,14 +857,17 @@ fn flows_from(direction : TcpDirection) -> Array[Flow] {
                   version: first,
                   status,
                   status_text: third,
-                  headers,
-                  headers_size,
-                  body_size,
-                  mime: media_type(headers),
-                  body_text: body,
-                  cookies: cookies_from(headers, true),
-                  seconds: stamp.seconds,
-                  millis: stamp.millis,
+                  headers: message.headers,
+                  headers_size: message.headers_size,
+                  body_size: message.wire_body,
+                  mime: media_type(message.headers),
+                  body_text: message.body_text,
+                  cookies: cookies_from(message.headers, true),
+                  decoded_size: message.decoded_size,
+                  seconds,
+                  millis,
+                  end_seconds,
+                  end_millis,
                   src_ip: direction.src_ip,
                   dst_ip: direction.dst_ip,
                   src_port: direction.src_port,
@@ -659,17 +879,19 @@ fn flows_from(direction : TcpDirection) -> Array[Flow] {
           flows.push(
             Request({
               http_method: first,
-              url: request_url(second, headers),
+              url: request_url(second, message.headers),
               version: third,
-              headers,
+              headers: message.headers,
               query: parse_query(second),
-              headers_size,
-              body_size,
-              body_text: body,
-              cookies: cookies_from(headers, false),
-              started_at: unix_utc(stamp.seconds),
-              seconds: stamp.seconds,
-              millis: stamp.millis,
+              headers_size: message.headers_size,
+              body_size: message.wire_body,
+              body_text: message.body_text,
+              cookies: cookies_from(message.headers, false),
+              started_at: unix_utc(seconds),
+              seconds,
+              millis,
+              end_seconds,
+              end_millis,
               src_ip: direction.src_ip,
               dst_ip: direction.dst_ip,
               src_port: direction.src_port,
@@ -770,11 +992,24 @@ fn capture_packets(packets : Array[RawPacket]) -> Array[Captured] {
             response_cookies: response.cookies,
             mime: response.mime,
             body_text: response.body_text,
-            time_ms: elapsed_ms(
+            decoded_size: response.decoded_size,
+            send_ms: elapsed_ms(
               request.seconds,
               request.millis,
+              request.end_seconds,
+              request.end_millis,
+            ),
+            wait_ms: elapsed_ms(
+              request.end_seconds,
+              request.end_millis,
               response.seconds,
               response.millis,
+            ),
+            receive_ms: elapsed_ms(
+              response.seconds,
+              response.millis,
+              response.end_seconds,
+              response.end_millis,
             ),
           })
         }

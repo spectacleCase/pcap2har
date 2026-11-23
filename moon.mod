@@ -1,6 +1,6 @@
 name = "spectacleCase/pcap2har"
 
-version = "0.2.0"
+version = "0.3.0"
 
 readme = "README.mbt.md"
 
@@ -12,7 +12,7 @@ keywords = [ "pcap", "har", "http", "http-archive" ]
 
 preferred_target = "native"
 
-description = "Convert cleartext HTTP/1.1 in a classic pcap into HAR 1.2"
+description = "Convert cleartext HTTP/1.1 in a classic pcap or pcapng into HAR 1.2"
 
 import {
   "cghyyrrt/moonbit-pcap@0.1.2",

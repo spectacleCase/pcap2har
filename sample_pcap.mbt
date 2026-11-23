@@ -135,42 +135,49 @@ fn server_mac() -> Array[Byte] {
 }
 
 ///|
+fn exchange_frames(request : String, response : String) -> Array[OutPacket] {
+  [
+    {
+      seconds: 1725148800,
+      fraction: 0,
+      payload: http_frame(
+        client_ip(),
+        server_ip(),
+        client_mac(),
+        server_mac(),
+        12345,
+        80,
+        request,
+      ),
+    },
+    {
+      seconds: 1725148800,
+      fraction: 1000,
+      payload: http_frame(
+        server_ip(),
+        client_ip(),
+        server_mac(),
+        client_mac(),
+        80,
+        12345,
+        response,
+      ),
+    },
+  ]
+}
+
+///|
 fn exchange_pcap_endian(
   request : String,
   response : String,
   little : Bool,
 ) -> Bytes {
-  classic_pcap(
-    [
-      {
-        seconds: 1725148800,
-        fraction: 0,
-        payload: http_frame(
-          client_ip(),
-          server_ip(),
-          client_mac(),
-          server_mac(),
-          12345,
-          80,
-          request,
-        ),
-      },
-      {
-        seconds: 1725148800,
-        fraction: 1000,
-        payload: http_frame(
-          server_ip(),
-          client_ip(),
-          server_mac(),
-          client_mac(),
-          80,
-          12345,
-          response,
-        ),
-      },
-    ],
-    little,
-  )
+  classic_pcap(exchange_frames(request, response), little)
+}
+
+///|
+fn exchange_pcapng(request : String, response : String, little : Bool) -> Bytes {
+  pcapng_packets(exchange_frames(request, response), little)
 }
 
 ///|
@@ -192,4 +199,10 @@ fn sample_response() -> String {
 /// 一份只含一次明文 HTTP/1.1 往返的经典 pcap。
 pub fn sample_pcap() -> Bytes {
   exchange_pcap(sample_request(), sample_response())
+}
+
+///|
+/// 与 `sample_pcap` 相同的往返，写成小端 pcapng。
+pub fn sample_pcapng() -> Bytes {
+  exchange_pcapng(sample_request(), sample_response(), true)
 }

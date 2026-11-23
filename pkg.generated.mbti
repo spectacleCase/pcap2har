@@ -12,6 +12,8 @@ pub fn pcap_to_har(Bytes) -> Result[String, ConvertError]
 
 pub fn sample_pcap() -> Bytes
 
+pub fn sample_pcapng() -> Bytes
+
 pub let version : String
 
 // Errors

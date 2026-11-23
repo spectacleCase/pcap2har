@@ -91,7 +91,9 @@ fn render_entry(entry : Captured) -> String {
   buf.write_string("{\"startedDateTime\":")
   buf.write_string(json_string(entry.started_at))
   buf.write_string(",\"time\":")
-  buf.write_string(entry.time_ms.to_string())
+  buf.write_string(
+    (entry.send_ms + entry.wait_ms + entry.receive_ms).to_string(),
+  )
   buf.write_string(",\"request\":{\"method\":")
   buf.write_string(json_string(entry.http_method))
   buf.write_string(",\"url\":")
@@ -126,7 +128,7 @@ fn render_entry(entry : Captured) -> String {
   buf.write_string(",\"headers\":")
   buf.write_string(json_fields(entry.response_headers))
   buf.write_string(",\"content\":{\"size\":")
-  buf.write_string(entry.response_body_size.to_string())
+  buf.write_string(entry.decoded_size.to_string())
   buf.write_string(",\"mimeType\":")
   buf.write_string(json_string(entry.mime))
   buf.write_string(",\"text\":")
@@ -135,9 +137,13 @@ fn render_entry(entry : Captured) -> String {
   buf.write_string(entry.response_headers_size.to_string())
   buf.write_string(",\"bodySize\":")
   buf.write_string(entry.response_body_size.to_string())
-  buf.write_string("},\"cache\":{},\"timings\":{\"send\":0,\"wait\":")
-  buf.write_string(entry.time_ms.to_string())
-  buf.write_string(",\"receive\":0}}")
+  buf.write_string("},\"cache\":{},\"timings\":{\"send\":")
+  buf.write_string(entry.send_ms.to_string())
+  buf.write_string(",\"wait\":")
+  buf.write_string(entry.wait_ms.to_string())
+  buf.write_string(",\"receive\":")
+  buf.write_string(entry.receive_ms.to_string())
+  buf.write_string("}}")
   buf.to_string()
 }
 

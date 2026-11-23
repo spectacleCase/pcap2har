@@ -50,6 +50,7 @@ jobs:
           moon test --target native --deny-warn
           moon run --target native cmd/main -- sample
           moon run --target native cmd/main -- convert examples/sample.pcap
+          moon run --target native cmd/main -- convert examples/sample.pcapng
 
       - name: Verify formatting
         run: moon fmt --check

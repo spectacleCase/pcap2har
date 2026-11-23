@@ -1,16 +1,18 @@
 # pcap2har
 
-pcap2har 把一份已经抓好的经典 pcap 里的明文 HTTP/1.1 请求和响应配成对，写成 [HAR 1.2](http://www.softwareishard.com/blog/har-12-spec/)。它不抓新的包，不发送请求，也不解密 HTTPS。
+pcap2har 把一份已经抓好的经典 pcap 或 pcapng 里的明文 HTTP/1.1 请求和响应配成对，写成 [HAR 1.2](http://www.softwareishard.com/blog/har-12-spec/)。它不抓新的包，不发送请求，也不解密 HTTPS。
 
-Wireshark 保存的是报文，浏览器 HAR 保存的是一次次 HTTP 交换。两边没有现成的官方导出。MoonBit 生态里，`cghyyrrt/moonbit-pcap` 负责读 pcap 和分层，`cpypypypy/har-toolkit` 负责解析和校验 HAR，但都不把 pcap 转成 HAR。本项目补的是这一段。
+Wireshark 保存的是报文，浏览器 HAR 保存的是一次次 HTTP 交换。两边没有现成的官方导出。MoonBit 生态里，`cghyyrrt/moonbit-pcap` 负责报文分层，`cpypypypy/har-toolkit` 负责解析和校验 HAR，但都不把 pcap 转成 HAR。本项目补的是这一段。
 
 ## 边界
 
-- 只读经典 pcap。文件头按规范识别小端和大端，链路类型只接受 Ethernet，网络层按 IPv4，传输层按 TCP。
-- 同一方向上被拆开或乱序的 TCP 段会用 `moonbit-pcap` 的 `TcpStreamReassembler` 拼回后再解析 HTTP。pcapng 和 TLS 不在这版里。
-- 报文分层用 `parse_ethernet`、`parse_ipv4`、`parse_tcp`。pcap 文件头由本项目自己读，不用它的 `PcapReader` / `PcapWriter`：0.1.2 把 magic 和后面的字节序配反了，写出的文件 Wireshark 认不出。
+- 读取经典 pcap 和 pcapng。两种文件头都识别小端和大端。网络层按 IPv4，传输层按 TCP。
+- 经典 pcap 的链路类型必须是 Ethernet。pcapng 里不是 Ethernet 的接口会跳过，空的合法 pcapng 得到空 HAR。
+- 同一方向上被拆开或乱序的 TCP 段会用 `moonbit-pcap` 的 `TcpStreamReassembler` 拼回后再解析 HTTP。TLS 不在这版里。
+- 报文分层用 `parse_ethernet`、`parse_ipv4`、`parse_tcp`。容器头由本项目自己读，不用它的 `PcapReader` / `PcapWriter` / `PcapngReader`：0.1.2 的经典 pcap 把 magic 和后面的字节序配反了，pcapng 读取也在确定字节序之前解释块长度。
 - `parse_http` 目前只根据前缀判断是不是 HTTP，方法、路径和状态码由本项目从起始行解析。
-- `startedDateTime` 使用请求首字节所在包的整秒 UTC。`time` 和 `timings.wait` 是响应首字节与请求首字节的毫秒差，`send` 和 `receive` 写 0。
+- `startedDateTime` 使用请求首字节所在包的整秒 UTC。`send` 是请求从第一包到最后一包的毫秒数，`wait` 是等到响应第一包的毫秒数，`receive` 是响应从第一包到最后一包的毫秒数，`time` 是三者之和。
+- `Transfer-Encoding: chunked` 会解码。`bodySize` 保留线上分块帧的长度，`content.size` 和文本是解码后的正文。gzip 不解码。
 - 有正文的请求会写成 `postData`。`Cookie` 和 `Set-Cookie` 会拆进 cookies 数组。
 
 ## 快速开始
@@ -20,9 +22,10 @@ moon test
 moon run --target native cmd/main -- sample
 moon run --target native cmd/main -- write-sample examples/sample.pcap
 moon run --target native cmd/main -- convert examples/sample.pcap
+moon run --target native cmd/main -- convert examples/sample.pcapng
 ```
 
-`examples/sample.pcap` 是内置样例：客户端 `10.0.0.1:12345` 向 `10.0.0.2:80` 发送 `GET /api/users?id=7`，服务器返回 `200 OK` 和正文 `hello`。请求时间戳是 `1725148800`，对应 `2024-09-01T00:00:00Z`。
+`examples/sample.pcap` 和 `examples/sample.pcapng` 是同一次往返：客户端 `10.0.0.1:12345` 向 `10.0.0.2:80` 发送 `GET /api/users?id=7`，服务器返回 `200 OK` 和正文 `hello`。请求时间戳是 `1725148800`，对应 `2024-09-01T00:00:00Z`。两种容器写出的 HAR 相同。
 
 ## 命令
 
@@ -30,9 +33,10 @@ moon run --target native cmd/main -- convert examples/sample.pcap
 pcap2har sample
 pcap2har convert <file.pcap>
 pcap2har write-sample <file.pcap>
+pcap2har write-sample-pcapng <file.pcapng>
 ```
 
-`convert` 在文件读不到或内容不是 pcap 时返回非 0。
+`convert` 在文件读不到或内容不是 pcap / pcapng 时返回非 0。`sample_pcapng` 与 `sample_pcap` 是同一次往返，只是容器换成小端 pcapng。
 
 ## 库 API
 

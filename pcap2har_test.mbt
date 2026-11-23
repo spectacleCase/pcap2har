@@ -14,7 +14,9 @@ test "sample pcap becomes one validated HAR entry" {
       let entry = document.entries()[0]
       assert_eq(entry.started_datetime(), "2024-09-01T00:00:00Z")
       assert_eq(entry.time(), 1.0)
+      assert_eq(entry.timings().send(), 0.0)
       assert_eq(entry.timings().wait(), 1.0)
+      assert_eq(entry.timings().receive(), 0.0)
       assert_eq(entry.request().request_method(), "GET")
       assert_eq(entry.request().url(), "http://example.com/api/users?id=7")
       assert_eq(entry.request().http_version(), "HTTP/1.1")
@@ -44,6 +46,13 @@ test "extract exchanges exposes the paired request" {
 ///|
 test "bytes that are not a pcap are rejected" {
   assert_true(@pcap2har.pcap_to_har(Bytes::from_array([b'\x00'])) is Err(_))
+}
+
+///|
+test "sample pcapng produces the same HAR" {
+  let classic = @pcap2har.pcap_to_har(@pcap2har.sample_pcap()).unwrap()
+  let ng = @pcap2har.pcap_to_har(@pcap2har.sample_pcapng()).unwrap()
+  assert_eq(ng, classic)
 }
 
 ///|
